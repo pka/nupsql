@@ -1,0 +1,15 @@
+[package]
+name = "nupsql"
+version = "0.1.0"
+authors = ["Pirmin Kalberer <pka@sourcepole.ch>"]
+edition = "2018"
+
+[[bin]]
+name = "nu_plugin_psql"
+path = "src/main.rs"
+
+[dependencies]
+nu = { path = "../nushell" } # "0.3.0"
+tokio-postgres = "0.4.0-rc.3"
+tokio = "0.1.7"
+futures = "0.1.7"
