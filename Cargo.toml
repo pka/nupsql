@@ -10,6 +10,6 @@ path = "src/main.rs"
 
 [dependencies]
 nu = { path = "../nushell" } # "0.3.0"
-tokio-postgres = "0.4.0-rc.3"
-tokio = "0.1.7"
-futures = "0.1.7"
+tokio-postgres = { git = "https://github.com/sfackler/rust-postgres/", rev = "5283ad4" }
+tokio = "0.2.0-alpha.4"
+futures-preview = { version = "=0.3.0-alpha.18", features = ["nightly", "async-await"] }
