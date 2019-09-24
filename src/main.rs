@@ -19,29 +19,13 @@ impl Psql {
         }
     }
 
-    // fn filter(&mut self, value: Tagged<Value>) -> Result<Tagged<Value>, ShellError> {
-    //     match value.item {
-    //         Value::Primitive(Primitive::String(_s)) => Ok(Tagged {
-    //             item: block_on(self.psql("host=localhost user=postgres".to_string()))
-    //                 .map_err(|e| ShellError::string(format!("{}", e)))?,
-    //             tag: value.tag,
-    //         }),
-    //         _ => Err(ShellError::labeled_error(
-    //             "Unrecognized type in stream",
-    //             "'psql' given non-string by this",
-    //             value.tag.span,
-    //         )),
-    //     }
-    // }
-
-    fn cmd(&mut self, tag: Tag) -> Vec<Tagged<Value>> {
-        let res = block_on(psql(
+    fn cmd(&mut self, tag: Tag) -> Result<Vec<Tagged<Value>>, ShellError> {
+        block_on(psql(
             self.conn.as_ref().unwrap(),
             self.query.as_ref().unwrap(),
             tag,
         ))
-        .unwrap();
-        res
+        .map_err(|e| ShellError::string(format!("{}", e)))
     }
 }
 
@@ -71,9 +55,7 @@ async fn psql(connstr: &str, query: &str, tag: Tag) -> Result<Vec<Tagged<Value>>
                 &Type::FLOAT8 => row.try_get::<_, f64>(i).map(Value::decimal),
                 // &Type::NUMERIC => row.try_get::<_, f64>(i).map(Value::decimal),
                 &Type::BOOL => row.try_get::<_, bool>(i).map(Value::boolean),
-                // &Type::DATE | &Type::TIME | &Type::TIMESTAMP | &Type::TIMESTAMPTZ => {
-                //     row.try_get::<_, _>(i.map(Value::date_time))
-                // }
+                // &Type::DATE | &Type::TIME | &Type::TIMESTAMP | &Type::TIMESTAMPTZ =>
                 &Type::BYTEA => row.try_get::<_, Vec<u8>>(i).map(Value::binary),
                 _ => Ok(Value::nothing()),
             };
@@ -126,11 +108,8 @@ impl Plugin for Psql {
             }
         }
 
-        Ok(self
-            .cmd(call_info.name_tag)
-            .into_iter()
-            .map(ReturnSuccess::value)
-            .collect())
+        self.cmd(call_info.name_tag)
+            .map(|table| table.into_iter().map(ReturnSuccess::value).collect())
     }
 }
 
