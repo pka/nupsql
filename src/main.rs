@@ -4,7 +4,7 @@ use nu::{
     serve_plugin, CallInfo, Plugin, Primitive, ReturnSuccess, ReturnValue, ShellError, Signature,
     SyntaxShape, Tag, Tagged, TaggedDictBuilder, Value,
 };
-use tokio_postgres::{Error, NoTls, Row};
+use tokio_postgres::{types::Type, Error, NoTls, Row};
 
 struct Psql {
     conn: Option<String>,
@@ -35,37 +35,53 @@ impl Psql {
     // }
 
     fn cmd(&mut self, tag: Tag) -> Vec<Tagged<Value>> {
-        let mut output = vec![];
+        let res = block_on(psql(
+            self.conn.as_ref().unwrap(),
+            self.query.as_ref().unwrap(),
+            tag,
+        ))
+        .unwrap();
+        res
+    }
+}
+
+async fn psql(connstr: &str, query: &str, tag: Tag) -> Result<Vec<Tagged<Value>>, Error> {
+    let (mut client, connection) = tokio_postgres::connect(&connstr, NoTls).await?;
+    let connection = connection.map(|r| {
+        if let Err(e) = r {
+            eprintln!("connection error: {}", e);
+        }
+    });
+    tokio::spawn(connection);
+
+    let stmt = client.prepare(query).await?;
+    let columns = stmt.columns();
+
+    let mut records = vec![];
+    let rows: Vec<Row> = client.query(&stmt, &[]).try_collect().await?;
+    for row in rows {
         let mut dict = TaggedDictBuilder::new(tag);
-        let res = block_on(self.psql(self.conn.as_ref().unwrap().to_string())).unwrap();
-        dict.insert("res", res);
-        output.push(dict.into_tagged_value());
-        output
+        for (i, col) in columns.iter().enumerate() {
+            let opt_value = match col.type_() {
+                &Type::TEXT | &Type::VARCHAR => row.try_get::<_, &str>(i).map(Value::string),
+                &Type::INT2 => row.try_get::<_, i16>(i).map(Value::int),
+                &Type::INT4 => row.try_get::<_, i32>(i).map(Value::int),
+                &Type::INT8 => row.try_get::<_, i64>(i).map(Value::int),
+                &Type::FLOAT4 => row.try_get::<_, f32>(i).map(Value::decimal),
+                &Type::FLOAT8 => row.try_get::<_, f64>(i).map(Value::decimal),
+                // &Type::NUMERIC => row.try_get::<_, f64>(i).map(Value::decimal),
+                &Type::BOOL => row.try_get::<_, bool>(i).map(Value::boolean),
+                // &Type::DATE | &Type::TIME | &Type::TIMESTAMP | &Type::TIMESTAMPTZ => {
+                //     row.try_get::<_, _>(i.map(Value::date_time))
+                // }
+                &Type::BYTEA => row.try_get::<_, Vec<u8>>(i).map(Value::binary),
+                _ => Ok(Value::nothing()),
+            };
+            dict.insert(col.name(), opt_value.unwrap_or(Value::nothing()));
+        }
+        records.push(dict.into_tagged_value());
     }
-
-    async fn psql(&mut self, connstr: String) -> Result<Value, Error> {
-        // Connect to the database.
-        let (mut client, connection) = tokio_postgres::connect(&connstr, NoTls).await?;
-
-        // The connection object performs the actual communication with the database,
-        // so spawn it off to run on its own.
-        let connection = connection.map(|r| {
-            if let Err(e) = r {
-                eprintln!("connection error: {}", e);
-            }
-        });
-        tokio::spawn(connection);
-
-        // Now we can prepare a simple statement that just returns its parameter.
-        let stmt = client.prepare(self.query.as_ref().unwrap()).await?;
-
-        // And then execute it, returning a Stream of Rows which we collect into a Vec.
-        let rows: Vec<Row> = client.query(&stmt, &[]).try_collect().await?;
-
-        // Now we can check that we got back the same string we sent over.
-        let value: &str = rows[0].get(0);
-        Ok(Value::string(value))
-    }
+    Ok(records)
 }
 
 impl Plugin for Psql {
