@@ -9,7 +9,7 @@ name = "nu_plugin_psql"
 path = "src/main.rs"
 
 [dependencies]
-nu = { path = "../nushell" } # "0.3.0"
+nu = { version = "0.3.0", default-features = false, features = ["crossterm"] }
 tokio-postgres = { git = "https://github.com/sfackler/rust-postgres/", rev = "5283ad4" }
 tokio = "0.2.0-alpha.4"
 futures-preview = { version = "=0.3.0-alpha.18", features = ["nightly", "async-await"] }
