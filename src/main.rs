@@ -1,8 +1,8 @@
-use futures::executor::block_on;
 use nu_errors::ShellError;
+use nu_plugin::{serve_plugin, Plugin};
 use nu_protocol::{
-    serve_plugin, CallInfo, Plugin, Primitive, ReturnSuccess, ReturnValue, Signature, SyntaxShape,
-    TaggedDictBuilder, UntaggedValue, Value,
+    CallInfo, Primitive, ReturnSuccess, ReturnValue, Signature, SyntaxShape, TaggedDictBuilder,
+    UntaggedValue, Value,
 };
 use nu_source::Tag;
 use tokio_postgres::{types::Type, Error, NoTls, Row};
@@ -34,8 +34,8 @@ async fn psql(connstr: &str, query: &str, tag: Tag) -> Result<Vec<Value>, Error>
     let (client, connection) = tokio_postgres::connect(&connstr, NoTls).await?;
     // The connection object performs the actual communication with the database,
     // so spawn it off to run on its own.
-    tokio::spawn(async move {
-        if let Err(e) = connection.await {
+    std::thread::spawn(move || {
+        if let Err(e) = connection {
             eprintln!("connection error: {}", e);
         }
     });
@@ -116,7 +116,6 @@ impl Plugin for Psql {
     }
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
     serve_plugin(&mut Psql::new());
 }
