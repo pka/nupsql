@@ -5,7 +5,7 @@ use nu_protocol::{
     UntaggedValue, Value,
 };
 use nu_source::Tag;
-use tokio_postgres::{types::Type, Error, NoTls, Row};
+use postgres::{types, Connection, Error, TlsMode};
 
 struct Psql {
     conn: Option<String>,
@@ -21,48 +21,58 @@ impl Psql {
     }
 
     fn cmd(&mut self, tag: Tag) -> Result<Vec<Value>, ShellError> {
-        block_on(psql(
+        psql(
             self.conn.as_ref().unwrap(),
             self.query.as_ref().unwrap(),
             tag,
-        ))
+        )
         .map_err(|e| ShellError::untagged_runtime_error(format!("{}", e)))
     }
 }
 
-async fn psql(connstr: &str, query: &str, tag: Tag) -> Result<Vec<Value>, Error> {
-    let (client, connection) = tokio_postgres::connect(&connstr, NoTls).await?;
-    // The connection object performs the actual communication with the database,
-    // so spawn it off to run on its own.
-    std::thread::spawn(move || {
-        if let Err(e) = connection {
-            eprintln!("connection error: {}", e);
-        }
-    });
-    let stmt = client.prepare(query).await?;
+fn psql(connstr: &str, query: &str, tag: Tag) -> Result<Vec<Value>, Error> {
+    let conn = Connection::connect(connstr, TlsMode::None)?;
+    let stmt = conn.prepare(query)?;
     let columns = stmt.columns();
 
     let mut records = vec![];
-    let rows: Vec<Row> = client.query(&stmt, &[]).await?;
-    for row in rows {
+    for row in &stmt.query(&[])? {
         let mut dict = TaggedDictBuilder::new(&tag);
         for (i, col) in columns.iter().enumerate() {
             let opt_value = match col.type_() {
-                &Type::TEXT | &Type::VARCHAR => {
-                    row.try_get::<_, &str>(i).map(UntaggedValue::string)
-                }
-                &Type::INT2 => row.try_get::<_, i16>(i).map(UntaggedValue::int),
-                &Type::INT4 => row.try_get::<_, i32>(i).map(UntaggedValue::int),
-                &Type::INT8 => row.try_get::<_, i64>(i).map(UntaggedValue::int),
-                &Type::FLOAT4 => row.try_get::<_, f32>(i).map(UntaggedValue::decimal),
-                &Type::FLOAT8 => row.try_get::<_, f64>(i).map(UntaggedValue::decimal),
-                // &Type::NUMERIC => row.try_get::<_, f64>(i).map(UntaggedValue::decimal),
-                &Type::BOOL => row.try_get::<_, bool>(i).map(UntaggedValue::boolean),
-                // &Type::DATE | &Type::TIME | &Type::TIMESTAMP | &Type::TIMESTAMPTZ =>
-                &Type::BYTEA => row.try_get::<_, Vec<u8>>(i).map(UntaggedValue::binary),
-                _ => Ok(UntaggedValue::nothing()),
-            };
-            dict.insert_untagged(col.name(), opt_value.unwrap_or(UntaggedValue::nothing()));
+                &types::TEXT | &types::VARCHAR => row
+                    .get_opt::<_, String>(i)
+                    .map(|opt| opt.map(UntaggedValue::string)),
+                &types::INT2 => row
+                    .get_opt::<_, i16>(i)
+                    .map(|opt| opt.map(UntaggedValue::int)),
+                &types::INT4 => row
+                    .get_opt::<_, i32>(i)
+                    .map(|opt| opt.map(UntaggedValue::int)),
+                &types::INT8 => row
+                    .get_opt::<_, i64>(i)
+                    .map(|opt| opt.map(UntaggedValue::int)),
+                &types::FLOAT4 => row
+                    .get_opt::<_, f32>(i)
+                    .map(|opt| opt.map(UntaggedValue::decimal)),
+                &types::FLOAT8 => row
+                    .get_opt::<_, f64>(i)
+                    .map(|opt| opt.map(UntaggedValue::decimal)),
+                // &types::NUMERIC => row
+                //     .get_opt::<_, f64>(i)
+                //     .map(|opt| opt.map(UntaggedValue::decimal)),
+                &types::BOOL => row
+                    .get_opt::<_, bool>(i)
+                    .map(|opt| opt.map(UntaggedValue::boolean)),
+                // &types::DATE | &types::TIME | &types::TIMESTAMP | &types::TIMESTAMPTZ =>
+                &types::BYTEA => row
+                    .get_opt::<_, Vec<u8>>(i)
+                    .map(|opt| opt.map(UntaggedValue::binary)),
+                _ => Some(Ok(UntaggedValue::nothing())),
+            }
+            .unwrap_or(Ok(UntaggedValue::nothing()))
+            .unwrap_or(UntaggedValue::nothing());
+            dict.insert_untagged(col.name(), opt_value);
         }
         records.push(dict.into_value());
     }

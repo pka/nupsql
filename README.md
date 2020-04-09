@@ -16,7 +16,7 @@ Usage:
 Usage examples:
 
 ```
-> psql "host=localhost user=postgres" "SELECT * FROM pg_stat_activity" | pivot
+> psql postgresql://postgres@127.0.0.1/postgres "SELECT * FROM pg_stat_activity WHERE state IS NOT NULL" | pivot
 ━━━━┯━━━━━━━━━━━━━━━━━━┯━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  #  │ Column0          │ Column1 
 ────┼──────────────────┼────────────────────────────────
