@@ -1,131 +1,109 @@
-use nu_errors::ShellError;
-use nu_plugin::{serve_plugin, Plugin};
-use nu_protocol::{
-    CallInfo, Primitive, ReturnSuccess, ReturnValue, Signature, SyntaxShape, TaggedDictBuilder,
-    UntaggedValue, Value,
-};
-use nu_source::Tag;
-use postgres::{types, Connection, Error, TlsMode};
+use nu_plugin::{serve_plugin, Plugin, PluginCommand, SimplePluginCommand};
+use nu_protocol::{LabeledError, Record, Signature, Span, SyntaxShape, Value};
+use postgres::{types::Type, Error};
 
-struct Psql {
-    conn: Option<String>,
-    query: Option<String>,
-}
+struct Psql {}
 
 impl Psql {
     fn new() -> Psql {
-        Psql {
-            conn: None,
-            query: None,
-        }
+        Psql {}
     }
 
-    fn cmd(&mut self, tag: Tag) -> Result<Vec<Value>, ShellError> {
-        psql(
-            self.conn.as_ref().unwrap(),
-            self.query.as_ref().unwrap(),
-            tag,
-        )
-        .map_err(|e| ShellError::untagged_runtime_error(format!("{}", e)))
+    fn cmd(&self, conn: &str, query: &str, span: Span) -> Result<Vec<Value>, LabeledError> {
+        psql(conn, query, span).map_err(|e| LabeledError::new(e.to_string()))
     }
 }
 
-fn psql(connstr: &str, query: &str, tag: Tag) -> Result<Vec<Value>, Error> {
-    let conn = Connection::connect(connstr, TlsMode::None)?;
+fn psql(connstr: &str, query: &str, span: Span) -> Result<Vec<Value>, Error> {
+    let mut conn = postgres::Client::connect(connstr, postgres::NoTls)?;
     let stmt = conn.prepare(query)?;
     let columns = stmt.columns();
 
     let mut records = vec![];
-    for row in &stmt.query(&[])? {
-        let mut dict = TaggedDictBuilder::new(&tag);
+    for row in conn.query(&stmt, &[])? {
+        let mut record = Record::new();
         for (i, col) in columns.iter().enumerate() {
             let opt_value = match col.type_() {
-                &types::TEXT | &types::VARCHAR => row
-                    .get_opt::<_, String>(i)
-                    .map(|opt| opt.map(UntaggedValue::string)),
-                &types::INT2 => row
-                    .get_opt::<_, i16>(i)
-                    .map(|opt| opt.map(UntaggedValue::int)),
-                &types::INT4 => row
-                    .get_opt::<_, i32>(i)
-                    .map(|opt| opt.map(UntaggedValue::int)),
-                &types::INT8 => row
-                    .get_opt::<_, i64>(i)
-                    .map(|opt| opt.map(UntaggedValue::int)),
-                &types::FLOAT4 => row
-                    .get_opt::<_, f32>(i)
-                    .map(|opt| opt.map(UntaggedValue::decimal)),
-                &types::FLOAT8 => row
-                    .get_opt::<_, f64>(i)
-                    .map(|opt| opt.map(UntaggedValue::decimal)),
-                // &types::NUMERIC => row
-                //     .get_opt::<_, f64>(i)
-                //     .map(|opt| opt.map(UntaggedValue::decimal)),
-                &types::BOOL => row
-                    .get_opt::<_, bool>(i)
-                    .map(|opt| opt.map(UntaggedValue::boolean)),
-                // &types::DATE | &types::TIME | &types::TIMESTAMP | &types::TIMESTAMPTZ =>
-                &types::BYTEA => row
-                    .get_opt::<_, Vec<u8>>(i)
-                    .map(|opt| opt.map(UntaggedValue::binary)),
-                _ => Some(Ok(UntaggedValue::nothing())),
+                &Type::TEXT | &Type::VARCHAR => {
+                    row.try_get::<_, String>(i).map(|s| Value::string(s, span))
+                }
+                &Type::INT2 => row.try_get::<_, i16>(i).map(|n| Value::int(n as i64, span)),
+                &Type::INT4 => row.try_get::<_, i32>(i).map(|n| Value::int(n as i64, span)),
+                &Type::INT8 => row.try_get::<_, i64>(i).map(|n| Value::int(n, span)),
+                &Type::FLOAT4 => row
+                    .try_get::<_, f32>(i)
+                    .map(|f| Value::float(f as f64, span)),
+                &Type::FLOAT8 => row.try_get::<_, f64>(i).map(|f| Value::float(f, span)),
+                &Type::BOOL => row.try_get::<_, bool>(i).map(|b| Value::bool(b, span)),
+                &Type::BYTEA => row.try_get::<_, Vec<u8>>(i).map(|b| Value::binary(b, span)),
+                _ => Ok(Value::nothing(span)),
             }
-            .unwrap_or(Ok(UntaggedValue::nothing()))
-            .unwrap_or(UntaggedValue::nothing());
-            dict.insert_untagged(col.name(), opt_value);
+            .unwrap_or_else(|_| Value::nothing(span));
+            record.push(col.name(), opt_value);
         }
-        records.push(dict.into_value());
+        records.push(Value::record(record, span));
     }
     Ok(records)
 }
 
-impl Plugin for Psql {
-    fn config(&mut self) -> Result<Signature, ShellError> {
-        Ok(Signature::build("psql")
-            .desc("Execute PostgreSQL query.")
-            .required("conn", SyntaxShape::String, "DB connection string")
-            .required("query", SyntaxShape::String, "SQL query")
-            // .rest(SyntaxShape::String)
-            .filter())
+impl SimplePluginCommand for Psql {
+    type Plugin = Psql;
+
+    fn name(&self) -> &str {
+        "psql"
     }
 
-    fn begin_filter(&mut self, call_info: CallInfo) -> Result<Vec<ReturnValue>, ShellError> {
-        if let Some(args) = call_info.args.positional {
-            match &args[0] {
-                Value {
-                    value: UntaggedValue::Primitive(Primitive::String(s)),
-                    ..
-                } => {
-                    self.conn = Some(s.clone());
-                }
-                _ => {
-                    return Err(ShellError::untagged_runtime_error(format!(
-                        "Unrecognized type in params: {:?}",
-                        args[0]
-                    )))
-                }
-            }
-            match &args[1] {
-                Value {
-                    value: UntaggedValue::Primitive(Primitive::String(s)),
-                    ..
-                } => {
-                    self.query = Some(s.clone());
-                }
-                _ => {
-                    return Err(ShellError::untagged_runtime_error(format!(
-                        "Unrecognized type in params: {:?}",
-                        args[1]
-                    )))
-                }
-            }
-        }
+    fn description(&self) -> &str {
+        "Execute PostgreSQL query."
+    }
 
-        self.cmd(call_info.name_tag)
-            .map(|table| table.into_iter().map(ReturnSuccess::value).collect())
+    fn signature(&self) -> Signature {
+        Signature::build("psql")
+            .description("Execute PostgreSQL query.")
+            .named(
+                "conn",
+                SyntaxShape::String,
+                "DB connection string",
+                Some('c'),
+            )
+            .required("query", SyntaxShape::String, "SQL query")
+    }
+
+    fn run(
+        &self,
+        _plugin: &Self::Plugin,
+        engine: &nu_plugin::EngineInterface,
+        call: &nu_plugin::EvaluatedCall,
+        _input: &Value,
+    ) -> Result<Value, LabeledError> {
+        let query = call.positional[0].as_str()?;
+        let conn = call
+            .get_flag_value("conn")
+            .or_else(|| {
+                engine
+                    .get_plugin_config()
+                    .ok()??
+                    .get_data_by_key("DATABASE_URL")
+            })
+            .or_else(|| engine.get_env_var("DATABASE_URL").ok().flatten())
+            .ok_or_else(|| LabeledError::new("missing both `--conn` and `DATABASE_URL`"))?;
+
+        self.cmd(conn.as_str()?, query, call.head)
+            .map(|table| Value::list(table, call.head))
+            .map_err(Into::into)
+    }
+}
+
+impl Plugin for Psql {
+    fn version(&self) -> String {
+        env!("CARGO_PKG_VERSION").to_owned()
+    }
+
+    fn commands(&self) -> Vec<Box<dyn PluginCommand<Plugin = Self>>> {
+        vec![Box::new(Self::new())]
     }
 }
 
 fn main() {
-    serve_plugin(&mut Psql::new());
+    serve_plugin(&mut Psql::new(), nu_plugin::JsonSerializer);
 }
